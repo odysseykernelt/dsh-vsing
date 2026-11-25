@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
+import { createEmbedHelper } from './lib/embed.js';
 import { draftNotes, importLyrics, summary, toLrc, toUstx } from './lib/project.js';
 import {
   createProject,
@@ -31,6 +32,9 @@ import {
 } from './lib/store.js';
 
 const ROUTE_PREFIX = '/dsh-vsing/api';
+// 最近一次嵌入的矩形（父窗口客户区坐标）；只用于把状态回给面板。
+let lastEmbedBounds = null;
+let lastEmbedError = null;
 // 客户端面板挂载时报到用的时间戳；只在内存里，重启就清空。
 let lastClientPing = null;
 
@@ -109,6 +113,14 @@ export function apply(ctx, config) {
     ...localOpenUtauDirs(),
   ].map((d) => String(d || '').trim()).filter(Boolean);
 
+  // 原生窗口嵌入：helper 只在第一次用到时启动，随插件停用一起收掉。
+  const embed = createEmbedHelper({
+    scriptPath: join(PACKAGE_DIR, 'engine', 'embed-host.ps1'),
+    parentPid: process.pid,
+    cwd: PACKAGE_DIR,
+  });
+  ctx.effect(() => () => { void embed.dispose(); }, 'dsh-vsing: embed helper');
+
   /* -------------------------------- routes -------------------------------- */
 
   ctx.inject(['webServer'], (host) => {
@@ -117,7 +129,7 @@ export function apply(ctx, config) {
         kind: 'prefix',
         path: ROUTE_PREFIX,
         handler: (req, res) => {
-          void handleRoute(req, res, root, extraOpenUtauDirs);
+          void handleRoute(req, res, root, extraOpenUtauDirs, embed);
         },
       }),
       'dsh-vsing: workbench api',
@@ -336,7 +348,7 @@ async function probeHost(extraDirs = []) {
     dataDir: primary?.dataDir ?? null,
     bridgeDir,
     bridges,
-    embed: 'not_implemented',
+    embed: 'setparent',
     aligner: 'not_configured',
     renderer: 'not_configured',
   };
@@ -382,7 +394,7 @@ async function exists(path) {
   }
 }
 
-async function handleRoute(req, res, root, extraOpenUtauDirs) {
+async function handleRoute(req, res, root, extraOpenUtauDirs, embed) {
   const url = new URL(req.url ?? '/', 'http://localhost');
   const subPath = url.pathname.slice(ROUTE_PREFIX.length) || '/';
   const parts = subPath.split('/').filter(Boolean);
@@ -404,6 +416,68 @@ async function handleRoute(req, res, root, extraOpenUtauDirs) {
     if (req.method === 'GET' && subPath === '/host') {
       // 宿主环境：只报能验证的事实——本地装了哪些 OpenUtau、桥进程有没有在等。
       sendJson(res, 200, { ok: true, ...(await probeHost(extraOpenUtauDirs)) });
+      return;
+    }
+
+    if (req.method === 'GET' && subPath === '/embed/status') {
+      sendJson(res, 200, { ok: true, helper: embed.status(), bounds: lastEmbedBounds, error: lastEmbedError });
+      return;
+    }
+
+    if (req.method === 'POST' && subPath === '/embed/attach') {
+      const body = await readBody(req);
+      const rect = embedRect(body);
+      const command = { cmd: 'attach', ...rect };
+      if (body.process) command.process = String(body.process);
+      const answer = await embed.send(command);
+      lastEmbedBounds = rect;
+      if (answer.ok) {
+        lastEmbedError = null;
+        sendJson(res, 200, { ok: true, ...answer, bounds: rect });
+      } else {
+        lastEmbedError = String(answer.error ?? 'attach failed');
+        sendJson(res, 400, { ok: false, error: 'attach_failed', detail: lastEmbedError });
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && subPath === '/embed/move') {
+      const body = await readBody(req);
+      const rect = embedRect(body);
+      const answer = await embed.send({ cmd: 'move', ...rect });
+      if (answer.ok) lastEmbedBounds = rect;
+      sendJson(res, answer.ok ? 200 : 400, { ok: answer.ok, ...answer, bounds: rect });
+      return;
+    }
+
+    if (req.method === 'POST' && subPath === '/embed/detach') {
+      const answer = await embed.send({ cmd: 'detach' });
+      lastEmbedBounds = null;
+      sendJson(res, 200, { ok: answer.ok, ...answer });
+      return;
+    }
+
+    if (req.method === 'POST' && subPath === '/embed/release') {
+      // 兜底：把任何挂在宿主窗口下面的 OpenUtau 窗口放回去（helper 重启过也能救）。
+      const body = await readBody(req);
+      const command = { cmd: 'release' };
+      if (body.process) command.process = String(body.process);
+      if (Number.isFinite(Number(body.hwnd)) && Number(body.hwnd) > 0) command.hwnd = Number(body.hwnd);
+      const answer = await embed.send(command);
+      lastEmbedBounds = null;
+      sendJson(res, 200, { ok: answer.ok, ...answer });
+      return;
+    }
+
+    if (req.method === 'POST' && subPath === '/embed/launch') {
+      const body = await readBody(req);
+      const target = String(body.path ?? '').trim();
+      if (!target) {
+        sendJson(res, 400, { ok: false, error: 'missing_path' });
+        return;
+      }
+      const answer = await embed.send({ cmd: 'launch', path: target });
+      sendJson(res, answer.ok ? 200 : 400, { ok: answer.ok, ...answer });
       return;
     }
 
@@ -468,4 +542,18 @@ async function handleRoute(req, res, root, extraOpenUtauDirs) {
   } catch (error) {
     sendJson(res, 400, { ok: false, error: 'request_failed', detail: messageOf(error) });
   }
+}
+
+/** 面板传上来的矩形：只取有限、非负的数，缺省按 0 处理。 */
+function embedRect(body) {
+  const number = (value, fallback = 0) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : fallback;
+  };
+  return {
+    x: number(body.x),
+    y: number(body.y),
+    width: number(body.width, 800),
+    height: number(body.height, 600),
+  };
 }
