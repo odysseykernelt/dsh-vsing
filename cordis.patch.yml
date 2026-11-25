@@ -1,0 +1,11 @@
+# dsh-vsing — loader patch for the current DSH profile.
+- insert:
+    - id: dsh-vsing
+      name: dsh-vsing
+      config:
+        # Where projects live; empty means <DSH_HOME>/vsing/projects.
+        projectsDir: ''
+        # Extra OpenUtau directories to probe (portable/unpacked copies), e.g.
+        # openutauDirs:
+        #   - 'D:\apps\OpenUtau'
+        openutauDirs: []

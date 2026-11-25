@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Virtual singer workbench">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#2f3b4a"/>
+  <g fill="none" stroke="#8fd0c8" stroke-width="3" stroke-linecap="round">
+    <path d="M13 38v-6M20 44V26M27 48V18M34 42V24M41 46V20M48 40V30M55 36v-4"/>
+  </g>
+  <circle cx="46" cy="18" r="4" fill="#e8c46a"/>
+</svg>

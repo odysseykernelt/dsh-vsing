@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Virtual singer workbench",
+    "description": "Lyric-axis-first projects for virtual singing: import lyrics, draft notes, export LRC/USTX. A project is a .vproj file on disk you can take away. Skeleton release: alignment and audio rendering are not wired yet.",
+    "detail": "docs/DETAIL.md"
+  }
+}
